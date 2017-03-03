@@ -31,5 +31,5 @@ The [project homepage](http://janusgraph.org) contains more information on Janus
 
 ## Contributing
 
-Please see [`CONTRIBUTING.md`](CONTRIBUTING.md) for more information, including
+Please see [`GETTING_INVOLVED.md`](GETTING_INVOLVED.md) for more information, including
 CLAs and best practices for working with GitHub.
