@@ -142,6 +142,9 @@ Learn more about configuring and using JanusGraph Server in <<server>>.
 
 The JanusGraph zip file contains a quick start server component that helps make it easier to get started with Gremlin Server and JanusGraph. Invoke `bin/janusgraph.sh start` to start Gremlin Server with Cassandra and ElasticSearch.  
 
+[NOTE]
+For security reasons Elasticsearch and therefore `janusgraph.sh` must be run under a non-root account
+
 [[configuration-global]]
 === Global Configuration
 
@@ -245,9 +248,7 @@ JanusGraph natively supports the following data types.
 |Long			|long value
 |Float			|4 byte floating point number
 |Double			|8 byte floating point number
-|Decimal		|Number with 3 decimal digits
-|Precision		|Number with 6 decimal digits
-|Date           |Date
+|Date                   |Date
 |Geoshape		|Geographic shape like point, circle or box
 |UUID   		|UUID
 |=====
@@ -449,18 +450,18 @@ The Gremlin overview presented in this section focused on the Gremlin-Groovy lan
 
 JanusGraph uses the http://tinkerpop.apache.org/docs/{tinkerpop_version}/reference#gremlin-server[Gremlin Server] engine as the server component to process and answer client queries.  When packaged in JanusGraph, Gremlin Server is called JanusGraph Server.
 
-JanusGraph Server must be started manually in order to use it.  JanusGraph Server provides a way to remotely execute Gremlin scripts against one or more JanusGraph instances hosted within it. This section will describe how to use the WebSockets configuration, as well as describe how to configure JanusGraph Server to handle REST-style interactions.
+JanusGraph Server must be started manually in order to use it.  JanusGraph Server provides a way to remotely execute Gremlin scripts against one or more JanusGraph instances hosted within it. This section will describe how to use the WebSocket configuration, as well as describe how to configure JanusGraph Server to handle HTTP endpoint interactions.
 
 [[server-getting-started]]
 === Getting Started
 
 ==== Using the Pre-Packaged Distribution
 
-The JanusGraph https://github.com/JanusGraph/janusgraph/releases[release] comes pre-configured to run JanusGraph Server out of the box leveraging a sample Cassandra and ElasticSearch configuration to allow users to get started quickly with JanusGraph Server.  This configuration defaults to client applications that can connect to JanusGraph Server via WebSockets with a custom subprotocol.  There are a number of clients developed in different languages to help support the subprotocol.  The most familiar client to use the WebSocket interface is the gremlin.sh shell. The quick-start bundle is not intended to be representative of a production installation, but does provide a way to perform development with JanusGraph Server, run tests and see how the components are wired together. To use this default configuration:
+The JanusGraph https://github.com/JanusGraph/janusgraph/releases[release] comes pre-configured to run JanusGraph Server out of the box leveraging a sample Cassandra and ElasticSearch configuration to allow users to get started quickly with JanusGraph Server.  This configuration defaults to client applications that can connect to JanusGraph Server via WebSocket with a custom subprotocol.  There are a number of clients developed in different languages to help support the subprotocol.  The most familiar client to use the WebSocket interface is the gremlin.sh shell. The quick-start bundle is not intended to be representative of a production installation, but does provide a way to perform development with JanusGraph Server, run tests and see how the components are wired together. To use this default configuration:
 
 * Download a copy of the current `janusgraph-$VERSION.zip` file from the https://github.com/JanusGraph/janusgraph/releases[Releases page]
 * Unzip it and enter the `janusgraph-$VERSION` directory
-* Run `bin/janusgraph.sh start`.  This step will start Gremlin Server with Cassandra/ES forked into a separate process.
+* Run `bin/janusgraph.sh start`.  This step will start Gremlin Server with Cassandra/ES forked into a separate process. Note for security reasons Elasticsearch and therefore `janusgraph.sh` must be run under a non-root account.
 
 [source,bourne]
 ----
@@ -506,7 +507,7 @@ The `:remote` command tells the console to configure a remote connection to Grem
 
 The default configuration described in <<server-getting-started>> is already a WebSocket configuration.  If you want to alter the default configuration to work with your own Cassandra or HBase environment rather than use the quick start environment, follow these steps:
 
-.To Configure JanusGraph Server For WebSockets
+.To Configure JanusGraph Server For WebSocket
 . Test a local connection to a JanusGraph database first.  This step applies whether using the Gremlin Console to test the connection, or whether connecting from a program.  Make appropriate changes in a properties file in the ./conf directory for your environment.  For example, edit ./conf/janusgraph-hbase.properties and make sure the storage.backend, storage.hostname and storage.hbase.table parameters are specified correctly.  For more information on configuring JanusGraph for various storage backends, see <<storage-backends>>.  Make sure the properties file contains the following line: 
 +
 ```
@@ -550,9 +551,9 @@ IMPORTANT: Do not use bin/janusgraph.sh.  That starts the default configuration,
 
 
 
-=== JanusGraph Server as a REST-style Endpoint
+=== JanusGraph Server as a HTTP Endpoint
 
-The default configuration described in <<server-getting-started>> is a WebSocket configuration.  If you want to alter the default configuration in order to use JanusGraph Server as a REST endpoint for your JanusGraph database, follow these steps:
+The default configuration described in <<server-getting-started>> is a WebSocket configuration.  If you want to alter the default configuration in order to use JanusGraph Server as a HTTP endpoint for your JanusGraph database, follow these steps:
 
 .To Configure JanusGraph Server For Rest
 . Test a local connection to a JanusGraph database first.  This step applies whether using the Gremlin Console to test the connection, or whether connecting from a program.  Make appropriate changes in a properties file in the ./conf directory for your environment.  For example, edit ./conf/janusgraph-hbase.properties and make sure the storage.backend, storage.hostname and storage.hbase.table parameters are specified correctly.  For more information on configuring JanusGraph for various storage backends, see <<storage-backends>>.  Make sure the properties file contains the following line: 
@@ -599,7 +600,7 @@ graphs: {
 bin/gremlin-server.sh ./conf/gremlin-server/rest-gremlin-server.yaml
 ```
 +
-. The JanusGraph Server should now be running in REST mode and available for testing.  *curl* can be used to verify the server is working:
+. The JanusGraph Server should now be running in HTTP mode and available for testing.  *curl* can be used to verify the server is working:
 +
 ```
 curl -XPOST -Hcontent-type:application/json -d '{"gremlin":"g.V().count()"}' http://[IP for JanusGraph server host]:8182
@@ -607,11 +608,14 @@ curl -XPOST -Hcontent-type:application/json -d '{"gremlin":"g.V().count()"}' htt
 
 === Advanced JanusGraph Server Configurations
 
-==== WebSocket versus REST
+==== WebSocket versus HTTP
 
-JanusGraph Server must be run with a configuration for either WebSockets (for gremlin shell or other WebSocket programs) or re-configured for REST to work with REST clients.
+JanusGraph Server must be run with a configuration for either WebSocket (for gremlin shell or other WebSocket programs) or re-configured for HTTP to work with HTTP clients.
 
-There is, currently, no way to configure a single running instance of JanusGraph Server to communicate simultaneously with clients talking WebSockets and REST.  However, it is possible to create configuration files (following the steps in this chapter) for both WebSockets and REST and start two instances of the JanusGraph Server by pointing it to the various configurations when it is started.  In this way, the same JanusGraph database instance can be reached through different JanusGraph Servers through both WebSocket and REST calls. Make sure the port parameter in each yaml configuration is different if starting more than one JanusGraph Server on the same machine:
+Currently, there is no way to configure a single running instance of JanusGraph Server to communicate simultaneously with clients talking WebSocket and HTTP.
+However, it is possible to create configuration files (following the steps in this chapter) for both WebSocket and HTTP and start two instances of the JanusGraph Server by pointing it to the various configurations when it is started.
+In this way, the same JanusGraph database instance can be reached through different JanusGraph Servers through both WebSocket and HTTP calls.
+Make sure the port parameter in each yaml configuration is different if starting more than one JanusGraph Server on the same machine:
 
 ```
 port: 8182
@@ -665,7 +669,7 @@ scriptEngines: {
   gremlin-groovy: {
     scripts: [scripts/janusgraph.groovy]}}
 serializers:
-  - { className: org.apache.tinkerpop.gremlin.driver.ser.GryoMessageSerializerV1d0, config: { useMapperFromGraph: graph }}
+  - { className: org.apache.tinkerpop.gremlin.driver.ser.GryoMessageSerializerV1d0, config: { ioRegistries: [org.janusgraph.graphdb.tinkerpop.JanusGraphIoRegistry] }}
   - { className: org.apache.tinkerpop.gremlin.driver.ser.GryoMessageSerializerV1d0, config: { serializeResultToString: true }}
 metrics: {
   slf4jReporter: {enabled: true, interval: 180000}}
@@ -734,15 +738,14 @@ client.submit("g.V()").all().get();
 
 By adding the `JanusGraphIoRegistry` to the `org.apache.tinkerpop.gremlin.driver.ser.GryoMessageSerializerV1d0`, the driver will know how to properly deserialize custom data types returned by JanusGraph.
 
+=== Extending JanusGraph Server
+
+It is possible to extend Gremlin Server with other means of communication by implementing the interfaces that it provides and leverage this with JanusGraph.  See more details in the appropriate TinkerPop documentation.
+
 [[indexes]]
 == Indexing for better Performance
 
 JanusGraph supports two different kinds of indexing to speed up query processing: *graph indexes* and *vertex-centric indexes*. Most graph queries start the traversal from a list of vertices or edges that are identified by their properties. Graph indexes make these global retrieval operations efficient on large graphs. Vertex-centric indexes speed up the actual traversal through the graph, in particular when traversing through vertices with many incident edges.
-
-==== Extending JanusGraph Server
-
-It is possible to extend Gremlin Server with other means of communication by implementing the interfaces that it provides and leverage this with JanusGraph.  See more details in the appropriate TinkerPop documentation.
-
 
 
 [[graph-indexes]]
@@ -887,8 +890,9 @@ location = mgmt.makePropertyKey('location').dataType(Geoshape.class).make()
 nameAndAge = mgmt.getGraphIndex('nameAndAge')
 mgmt.addIndexKey(nameAndAge, location)
 mgmt.commit()
-//Wait for the index to become available
-mgmt.awaitGraphIndexStatus(graph, 'nameAndAge').call()
+//Previously created property keys already have the status ENABLED, but
+//our newly created property key "location" needs to REGISTER so we wait for both statuses
+mgmt.awaitGraphIndexStatus(graph, 'nameAndAge').status(REGISTERED, ENABLED).call()
 //Reindex the existing data
 mgmt = graph.openManagement()
 mgmt.updateIndex(mgmt.getGraphIndex("nameAndAge"), SchemaAction.REINDEX).get()
@@ -1002,12 +1006,12 @@ g.V(h).outE('battled').has('rating', gt(3.0)).inV()
 g.V(h).outE('battled').has('rating', 5.0).has('time', inside(10, 50)).inV()
 g.V(h).outE('battled').has('time', inside(10, 50)).inV()
 
-Hence, the `battlesByLocationAndTime` index can speed up the first two but not the third query.
+Hence, the `battlesByRatingAndTime` index can speed up the first two but not the third query.
 
 Multiple vertex-centric indexes can be built for the same edge label in order to support different constraint traversals. JanusGraph's query optimizer attempts to pick the most efficient index for any given traversal. Vertex-centric indexes only support equality and range/interval constraints.
 
 [NOTE]
-The property keys used in a vertex-centric index must have an explicitly defined data type (i.e. _not_ `Object.class`) which supports a native sort order. If the data type are floating point numbers, JanusGraph's custom `Decimal` or `Precision` data types must be used which have a fixed number of decimals.
+The property keys used in a vertex-centric index must have an explicitly defined data type (i.e. _not_ `Object.class`) which supports a native sort order.
 
 If the vertex-centric index is built against an edge label that is defined in the same management transaction, the index will be immediately available for querying. If the edge label has already been in use, building a vertex-centric index against it requires the execution of a <<reindex, reindex procedure>> to ensure that the index contains all previously added edges. Until the reindex procedure has completed, the index will not be available.
 
@@ -1027,7 +1031,7 @@ g.V(h).local(outE('battled').has('rating', 5.0).order().by('time', decr).limit(1
 
 The first query asks for the names of the 10 most recently battled monsters by Hercules. The second query asks for the places of the 10 most recent battles of Hercules that are rated 5 stars. In both cases, the query is constrained by an order on a property key with a limit on the number of elements to be returned.
 
-Such queries can also be efficiently answered by vertex-centric indexes if the order key matches the key of the index and the requested order (i.e. increasing or decreasing) is the same as the one defined for the index. The `battlesByTime` index would be used to answer the first query and `battlesByLocationAndTime` applies to the second. Note, that the `battlesByLocationAndTime` index cannot be used to answer the first query because an equality constraint on `rating` must be present for the second key in the index to be effective.
+Such queries can also be efficiently answered by vertex-centric indexes if the order key matches the key of the index and the requested order (i.e. increasing or decreasing) is the same as the one defined for the index. The `battlesByTime` index would be used to answer the first query and `battlesByRatingAndTime` applies to the second. Note, that the `battlesByRatingAndTime` index cannot be used to answer the first query because an equality constraint on `rating` must be present for the second key in the index to be effective.
 
 [NOTE]
 Ordered vertex queries are a JanusGraph extension to Gremlin which causes the verbose syntax and requires the `_()` step to convert the JanusGraph result back into a Gremlin pipeline.
@@ -1406,9 +1410,6 @@ When defining unique types with <<eventual-consistency, locking enabled>> (i.e. 
 
 Such exceptions are to be expected, since JanusGraph cannot know how to recover from a transactional state where an earlier read value has been modified by another transaction since this may invalidate the state of the transaction. In most cases it is sufficient to simply re-run the transaction. If locking exceptions are very frequent, try to analyze and remove the source of congestion.
 
-=== Floating point numbers in Vertex-centric Indices
-
-JanusGraph does not allow property keys with `Double` or `Float` data type to be part of a vertex centric index because their serialization does not support index creation. Use custom, fixed-digit data types `Decimal` (3 decimal digits) or `Precision (6 decimal digits) instead.
 
 === Ghost Vertices
 

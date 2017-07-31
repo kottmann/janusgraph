@@ -15,6 +15,7 @@
 package org.janusgraph.graphdb.configuration;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.janusgraph.core.*;
@@ -155,6 +156,10 @@ public class GraphDatabaseConfiguration {
             "The version of JanusGraph with which this database was created. Automatically set on first start. Don't manually set this property.",
             ConfigOption.Type.FIXED, String.class).hide();
 
+    public static final ConfigOption<String> TITAN_COMPATIBLE_VERSIONS = new ConfigOption<String>(GRAPH_NS,"titan-version",
+            "Titan version for backwards compatibility which this database was created. Automatically set on first start. Don't manually set this property.",
+            ConfigOption.Type.FIXED, String.class).hide();
+
     public static final ConfigOption<Boolean> ALLOW_STALE_CONFIG = new ConfigOption<Boolean>(GRAPH_NS,"allow-stale-config",
             "Whether to allow the local and storage-backend-hosted copies of the configuration to contain conflicting values for " +
             "options with any of the following types: " + Joiner.on(", ").join(ConfigOption.getManagedTypes()) + ".  " +
@@ -240,7 +245,7 @@ public class GraphDatabaseConfiguration {
             "Whether to pre-fetch all properties on first singular vertex property access. This can eliminate backend calls on subsequent" +
                     "property access for the same vertex at the expense of retrieving all properties at once. This can be " +
                     "expensive for vertices with many properties",
-            ConfigOption.Type.MASKABLE, false);
+            ConfigOption.Type.MASKABLE, true);
 
     public static final ConfigOption<Boolean> ADJUST_LIMIT = new ConfigOption<Boolean>(QUERY_NS,"smart-limit",
             "Whether the query optimizer should try to guess a smart limit for the query to ensure responsiveness in " +
@@ -267,7 +272,7 @@ public class GraphDatabaseConfiguration {
             if (s==null) return false;
             if (preregisteredAutoType.containsKey(s)) return true;
             try {
-                Class clazz = ClassUtils.getClass(s);
+                Class<?> clazz = ClassUtils.getClass(s);
                 return DefaultSchemaMaker.class.isAssignableFrom(clazz);
             } catch (ClassNotFoundException e) {
                 return false;
@@ -275,11 +280,10 @@ public class GraphDatabaseConfiguration {
         }
     });
 
-    private static final Map<String, DefaultSchemaMaker> preregisteredAutoType = new HashMap<String, DefaultSchemaMaker>() {{
-        put("none", DisableDefaultSchemaMaker.INSTANCE);
-        put("default", JanusGraphDefaultSchemaMaker.INSTANCE);
-        put("tp3", Tp3DefaultSchemaMaker.INSTANCE);
-    }};
+    private static final Map<String, DefaultSchemaMaker> preregisteredAutoType =
+            ImmutableMap.of("none", DisableDefaultSchemaMaker.INSTANCE,
+                    "default", JanusGraphDefaultSchemaMaker.INSTANCE,
+                    "tp3", Tp3DefaultSchemaMaker.INSTANCE);
 
 
     // ################ CACHE #######################
@@ -650,16 +654,16 @@ public class GraphDatabaseConfiguration {
 
     public static final ConfigNamespace STORE_META_NS = new ConfigNamespace(STORAGE_NS,"meta","Meta data to include in storage backend retrievals",true);
 
-    public static final ConfigOption<Boolean> STORE_META_TIMESTAMPS = new ConfigOption<Boolean>(STORE_META_NS,"timestamps",
+    public static final ConfigOption<Boolean> STORE_META_TIMESTAMPS = new ConfigOption<>(STORE_META_NS,"timestamps",
             "Whether to include timestamps in retrieved entries for storage backends that automatically annotated entries with timestamps",
             ConfigOption.Type.GLOBAL, false);
 
-    public static final ConfigOption<Boolean> STORE_META_TTL = new ConfigOption<Boolean>(STORE_META_NS,"ttl",
-            "Whether to include ttl in retrieved entries for storage backends that automatically annotated entries with timestamps",
+    public static final ConfigOption<Boolean> STORE_META_TTL = new ConfigOption<>(STORE_META_NS,"ttl",
+            "Whether to include ttl in retrieved entries for storage backends that support storage and retrieval of cell level TTL",
             ConfigOption.Type.GLOBAL, false);
 
-    public static final ConfigOption<Boolean> STORE_META_VISIBILITY = new ConfigOption<Boolean>(STORE_META_NS,"visibility",
-            "Whether to include visibility in retrieved entries for storage backends that automatically annotated entries with timestamps",
+    public static final ConfigOption<Boolean> STORE_META_VISIBILITY = new ConfigOption<>(STORE_META_NS,"visibility",
+            "Whether to include visibility in retrieved entries for storage backends that support cell level visibility",
             ConfigOption.Type.GLOBAL, true);
 
 
@@ -705,7 +709,7 @@ public class GraphDatabaseConfiguration {
      * fraction of the id pool occupied and potentially lost. For write heavy applications, larger block sizes should
      * be chosen.
      */
-    public static final ConfigOption<Integer> IDS_BLOCK_SIZE = new ConfigOption<Integer>(IDS_NS,"block-size",
+    public static final ConfigOption<Integer> IDS_BLOCK_SIZE = new ConfigOption<>(IDS_NS,"block-size",
             "Globally reserve graph element IDs in chunks of this size.  Setting this too low will make commits " +
             "frequently block on slow reservation requests.  Setting it too high will result in IDs wasted when a " +
             "graph instance shuts down with reserved but mostly-unused blocks.",
@@ -714,10 +718,20 @@ public class GraphDatabaseConfiguration {
 //    public static final int IDS_BLOCK_SIZE_DEFAULT = 10000;
 
     /**
+     * The name of the ID store. Currently this defaults to janusgraph_ids. You can override the ID store to
+     * facilitate migration from JanusGraph's predecessor, Titan. Previously, this KCVStore was named titan_ids.
+     */
+    public static final ConfigOption<String> IDS_STORE_NAME = new ConfigOption<>(IDS_NS, "store-name",
+        "The name of the ID KCVStore. IDS_STORE_NAME is meant to be used only for backward compatibility with Titan, " +
+            "and should not be used explicitly in normal operations or in new graphs.",
+        ConfigOption.Type.GLOBAL_OFFLINE, "janusgraph_ids");
+
+
+    /**
      * If flush ids is enabled, vertices and edges are assigned ids immediately upon creation. If not, then ids are only
      * assigned when the transaction is committed.
      */
-    public static final ConfigOption<Boolean> IDS_FLUSH = new ConfigOption<Boolean>(IDS_NS,"flush",
+    public static final ConfigOption<Boolean> IDS_FLUSH = new ConfigOption<>(IDS_NS,"flush",
             "When true, vertices and edges are assigned IDs immediately upon creation.  When false, " +
             "IDs are assigned only when the transaction commits. Must be disabled for graph partitioning to work.",
             ConfigOption.Type.MASKABLE, true);
@@ -740,7 +754,7 @@ public class GraphDatabaseConfiguration {
      * of the current block is consumed, a new block will be allocated. Larger values should be used if a lot of ids
      * are allocated in a short amount of time. Value must be in (0,1].
      */
-    public static final ConfigOption<Double> IDS_RENEW_BUFFER_PERCENTAGE = new ConfigOption<Double>(IDS_NS,"renew-percentage",
+    public static final ConfigOption<Double> IDS_RENEW_BUFFER_PERCENTAGE = new ConfigOption<>(IDS_NS,"renew-percentage",
             "When the most-recently-reserved ID block has only this percentage of its total IDs remaining " +
             "(expressed as a value between 0 and 1), JanusGraph asynchronously begins reserving another block. " +
             "This helps avoid transaction commits waiting on ID reservation even if the block size is relatively small.",
@@ -1303,7 +1317,7 @@ public class GraphDatabaseConfiguration {
     public static final String SYSTEM_PROPERTIES_STORE_NAME = "system_properties";
     public static final String SYSTEM_CONFIGURATION_IDENTIFIER = "configuration";
     public static final String USER_CONFIGURATION_IDENTIFIER = "userconfig";
-
+    private static final String INCOMPATIBLE_VERSION_EXCEPTION = "StorageBackend version is incompatible with current JanusGraph version: storage [%1s] vs. runtime [%2s]";
 
     private final Configuration configuration;
     private final ReadConfiguration configurationAtOpen;
@@ -1381,10 +1395,14 @@ public class GraphDatabaseConfiguration {
 
                 globalWrite.freezeConfiguration();
             } else {
-                String version = globalWrite.get(INITIAL_JANUSGRAPH_VERSION);
-                Preconditions.checkArgument(version!=null,"JanusGraph version has not been initialized");
-                if (!JanusGraphConstants.VERSION.equals(version) && !JanusGraphConstants.COMPATIBLE_VERSIONS.contains(version)) {
-                    throw new JanusGraphException("StorageBackend version is incompatible with current JanusGraph version: storage=" + version + " vs. runtime=" + JanusGraphConstants.VERSION);
+                try {
+                    String version = globalWrite.get(INITIAL_JANUSGRAPH_VERSION);
+                    Preconditions.checkArgument(version!=null,"JanusGraph version has not been initialized");
+                    if (!JanusGraphConstants.VERSION.equals(version) && !JanusGraphConstants.COMPATIBLE_VERSIONS.contains(version)) {
+                        throw new JanusGraphException(String.format(INCOMPATIBLE_VERSION_EXCEPTION, version, JanusGraphConstants.VERSION));
+                    }
+                } catch (IllegalStateException ise) {
+                    checkBackwardCompatibilityWithTitan(globalWrite);
                 }
 
                 final boolean managedOverridesAllowed;
@@ -1473,6 +1491,14 @@ public class GraphDatabaseConfiguration {
 
         this.configuration = new MergedConfiguration(overwrite,combinedConfig);
         preLoadConfiguration();
+    }
+
+    private void checkBackwardCompatibilityWithTitan(ModifiableConfiguration globalWrite) {
+        String version = globalWrite.get(TITAN_COMPATIBLE_VERSIONS);
+        Preconditions.checkArgument(version!=null,"JanusGraph version nor Titan compatibility have not been initialized");
+        if (!JanusGraphConstants.TITAN_COMPATIBLE_VERSIONS.contains(version)) {
+            throw new JanusGraphException(String.format(INCOMPATIBLE_VERSION_EXCEPTION, version, JanusGraphConstants.VERSION));
+        }
     }
 
     private static Map<ConfigElement.PathIdentifier, Object> getGlobalSubset(Map<ConfigElement.PathIdentifier, Object> m) {
@@ -1781,7 +1807,7 @@ public class GraphDatabaseConfiguration {
             Preconditions.checkArgument(configuration.has(CUSTOM_SERIALIZER_CLASS, attributeId));
             String serializername = configuration.get(CUSTOM_SERIALIZER_CLASS, attributeId);
             try {
-                Class sclass = Class.forName(serializername);
+                Class<?> sclass = Class.forName(serializername);
                 serializer = (AttributeSerializer) sclass.newInstance();
             } catch (ClassNotFoundException e) {
                 throw new IllegalArgumentException("Could not find serializer class" + serializername);
@@ -1791,7 +1817,7 @@ public class GraphDatabaseConfiguration {
                 throw new IllegalArgumentException("Could not instantiate serializer class" + serializername, e);
             }
             Preconditions.checkNotNull(serializer);
-            RegisteredAttributeClass reg = new RegisteredAttributeClass(position,clazz, serializer);
+            RegisteredAttributeClass reg = new RegisteredAttributeClass(position, clazz, serializer);
             for (int i = 0; i < all.size(); i++) {
                 if (all.get(i).equals(reg)) {
                     throw new IllegalArgumentException("Duplicate attribute registration: " + all.get(i) + " and " + reg);
@@ -1869,52 +1895,8 @@ public class GraphDatabaseConfiguration {
      Methods for writing/reading config files
 	-------------------------------------------*/
 
-    /**
-     * Returns the home directory for the graph database initialized in this configuration
-     *
-     * @return Home directory for this graph database configuration
-     */
-    public File getHomeDirectory() {
-        if (!configuration.has(STORAGE_DIRECTORY))
-            throw new UnsupportedOperationException("No home directory specified");
-        File dir = new File(configuration.get(STORAGE_DIRECTORY));
-        Preconditions.checkArgument(dir.isDirectory(), "Not a directory");
-        return dir;
-    }
-
-    //TODO: which of the following methods are really needed
-
-    /**
-     * Returns the home directory path for the graph database initialized in this configuration
-     *
-     * @return Home directory path for this graph database configuration
-     */
-    public String getHomePath() {
-        return getPath(getHomeDirectory());
-    }
-
     public static String getPath(File dir) {
         return dir.getAbsolutePath() + File.separator;
     }
-
-
-    static boolean existsFile(String file) {
-        return (new File(file)).isFile();
-    }
-
-
-//    static PropertiesConfiguration getPropertiesConfig(String file) {
-//        PropertiesConfiguration config = new PropertiesConfiguration();
-//        if (existsFile(file)) {
-//            try {
-//                config.load(file);
-//            } catch (ConfigurationException e) {
-//                throw new IllegalArgumentException("Cannot load existing configuration file", e);
-//            }
-//        }
-//        config.setFileName(file);
-//        config.setAutoSave(true);
-//        return config;
-//    }
 
 }

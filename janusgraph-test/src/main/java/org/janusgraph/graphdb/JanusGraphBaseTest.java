@@ -75,7 +75,7 @@ public abstract class JanusGraphBaseTest {
     public abstract WriteConfiguration getConfiguration();
 
     public Configuration getConfig() {
-        return new BasicConfiguration(GraphDatabaseConfiguration.ROOT_NS,config.copy(), BasicConfiguration.Restriction.NONE);
+        return new BasicConfiguration(GraphDatabaseConfiguration.ROOT_NS, config.copy(), BasicConfiguration.Restriction.NONE);
     }
 
     public static void clearGraph(WriteConfiguration config) throws BackendException {
@@ -92,10 +92,10 @@ public abstract class JanusGraphBaseTest {
         this.config = getConfiguration();
         TestGraphConfigs.applyOverrides(config);
         Preconditions.checkNotNull(config);
+        logManagers = new HashMap<String,LogManager>();
         clearGraph(config);
         readConfig = new BasicConfiguration(GraphDatabaseConfiguration.ROOT_NS, config, BasicConfiguration.Restriction.NONE);
         open(config);
-        logManagers = new HashMap<String,LogManager>();
     }
 
     public void open(WriteConfiguration config) {

@@ -14,96 +14,123 @@
 
 package org.janusgraph.diskstorage.es;
 
-import com.google.common.base.Joiner;
-
 import org.janusgraph.core.JanusGraphFactory;
 import org.janusgraph.core.JanusGraph;
 import org.janusgraph.core.attribute.Text;
 import org.janusgraph.diskstorage.BackendException;
 import org.janusgraph.diskstorage.BaseTransactionConfig;
+import org.janusgraph.diskstorage.PermanentBackendException;
 import org.janusgraph.diskstorage.configuration.BasicConfiguration;
 import org.janusgraph.diskstorage.configuration.Configuration;
 import org.janusgraph.diskstorage.configuration.ModifiableConfiguration;
 import org.janusgraph.diskstorage.configuration.backend.CommonsConfiguration;
 import org.janusgraph.diskstorage.indexing.*;
+import static org.janusgraph.diskstorage.es.ElasticSearchIndex.*;
 import org.janusgraph.diskstorage.util.StandardBaseTransactionConfig;
 
 import org.janusgraph.diskstorage.util.time.TimestampProviders;
 import org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration;
 import org.janusgraph.graphdb.query.condition.PredicateCondition;
-import org.janusgraph.util.system.IOUtils;
 import org.apache.commons.configuration.BaseConfiguration;
-import org.elasticsearch.action.admin.indices.settings.get.GetSettingsRequest;
-import org.elasticsearch.action.admin.indices.settings.get.GetSettingsResponse;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.node.Node;
-import org.elasticsearch.node.NodeBuilder;
+import org.apache.commons.io.IOUtils;
+import org.apache.http.HttpHost;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.util.EntityUtils;
+import org.junit.After;
 import org.junit.Assert;
-import org.junit.BeforeClass;
+import org.junit.Before;
 import org.junit.Test;
 
-import java.io.File;
-import java.time.Duration;
+import com.google.common.base.Joiner;
 
-import static org.janusgraph.diskstorage.es.ElasticSearchIndex.*;
-import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.INDEX_CONF_FILE;
-import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.INDEX_DIRECTORY;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.nio.charset.Charset;
+import java.time.Duration;
+import java.util.Map.Entry;
+
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.INDEX_HOSTS;
 
 import static org.junit.Assert.*;
 
 /**
  * Test behavior JanusGraph ConfigOptions governing ES client setup.
- *
- * {@link ElasticSearchIndexTest#testConfiguration()} exercises legacy
- * config options using an embedded JVM-local-transport ES instance.  By contrast,
- * this class exercises the new {@link ElasticSearchIndex#INTERFACE} configuration
- * mechanism and uses a network-capable embedded ES instance.
  */
 public class ElasticSearchConfigTest {
 
     private static final String INDEX_NAME = "escfg";
 
-    @BeforeClass
-    public static void killElasticsearch() {
-        IOUtils.deleteDirectory(new File("es"), true);
-        ElasticsearchRunner esr = new ElasticsearchRunner();
-        esr.stop();
+    private static final String ANALYZER_KEYWORD = "keyword";
+
+    private static final String ANALYZER_ENGLISH = "english";
+
+    private static final String ANALYZER_STANDARD = "standard";
+
+    private static final int PORT = 9200;
+
+    private ElasticsearchRunner esr;
+
+    private HttpHost host;
+
+    private CloseableHttpClient httpClient;
+
+    @Before
+    public void setup() throws Exception {
+        if (!ElasticsearchRunner.IS_EXTERNAL) {
+            esr = new ElasticsearchRunner();
+            esr.start();
+            Thread.sleep(5000);
+        }
+
+        httpClient = HttpClients.createDefault();
+        try {
+            host = new HttpHost(InetAddress.getByName("127.0.0.1"), 9200);
+        } catch (UnknownHostException e) {
+            fail(e.getMessage());
+        }
+    }
+
+    @After
+    public void teardown() throws Exception {
+        if (!ElasticsearchRunner.IS_EXTERNAL) {
+            esr.stop();
+        }
+        IOUtils.closeQuietly(httpClient);
     }
 
     @Test
-    public void testJanusGraphFactoryBuilder()
-    {
-        String baseDir = Joiner.on(File.separator).join("target", "es", "janusgraphfactory_jvmlocal_ext");
+    public void testJanusGraphFactoryBuilder() {
         JanusGraphFactory.Builder builder = JanusGraphFactory.build();
         builder.set("storage.backend", "inmemory");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.interface", "NODE");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.ext.node.data", "true");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.ext.node.client", "false");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.ext.node.local", "true");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.ext.path.data", baseDir + File.separator + "data");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.ext.path.work", baseDir + File.separator + "work");
-        builder.set("index." + INDEX_NAME + ".elasticsearch.ext.path.logs", baseDir + File.separator + "logs");
+        builder.set("index." + INDEX_NAME + ".elasticsearch.hostname", "127.0.0.1:" + PORT);
         JanusGraph graph = builder.open(); // Must not throw an exception
         assertTrue(graph.isOpen());
         graph.close();
     }
 
     @Test
-    public void testTransportClient() throws BackendException, InterruptedException {
-        ElasticsearchRunner esr = new ElasticsearchRunner(".", "transportClient.yml");
-        esr.start();
+    public void testClient() throws BackendException, InterruptedException {
         ModifiableConfiguration config = GraphDatabaseConfiguration.buildGraphConfiguration();
-        config.set(INTERFACE, ElasticSearchSetup.TRANSPORT_CLIENT.toString(), INDEX_NAME);
-        config.set(INDEX_HOSTS, new String[]{ "127.0.0.1" }, INDEX_NAME);
+        config.set(INTERFACE, ElasticSearchSetup.REST_CLIENT.toString(), INDEX_NAME);
+        config.set(INDEX_HOSTS, new String[]{ "127.0.0.1:" + PORT }, INDEX_NAME);
         Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
+        IndexProvider idx = open(indexConfig);
         simpleWriteAndQuery(idx);
         idx.close();
 
         config = GraphDatabaseConfiguration.buildGraphConfiguration();
-        config.set(INTERFACE, ElasticSearchSetup.TRANSPORT_CLIENT.toString(), INDEX_NAME);
-        config.set(INDEX_HOSTS, new String[]{ "10.11.12.13" }, INDEX_NAME);
+        config.set(INTERFACE, ElasticSearchSetup.REST_CLIENT.toString(), INDEX_NAME);
+        config.set(INDEX_HOSTS, new String[]{ "10.11.12.13:" + PORT }, INDEX_NAME);
         indexConfig = config.restrictTo(INDEX_NAME);
         Throwable failure = null;
         try {
@@ -113,190 +140,180 @@ public class ElasticSearchConfigTest {
         }
         // idx.close();
         Assert.assertNotNull("ES client failed to throw exception on connection failure", failure);
-
-        esr.stop();
     }
 
     @Test
-    public void testLocalNodeUsingExt() throws BackendException, InterruptedException {
+    public void testIndexCreationOptions() throws InterruptedException, BackendException, IOException {
+        final int shards = 7;
 
-        String baseDir = Joiner.on(File.separator).join("target", "es", "jvmlocal_ext");
-
-        assertFalse(new File(baseDir + File.separator + "data").exists());
-
-        CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.data", "true");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.client", "false");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.local", "true");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.path.data", baseDir + File.separator + "data");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.path.work", baseDir + File.separator + "work");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.path.logs", baseDir + File.separator + "logs");
-        ModifiableConfiguration config =
-                new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
-                        cc, BasicConfiguration.Restriction.NONE);
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
-        simpleWriteAndQuery(idx);
-        idx.close();
-
-        assertTrue(new File(baseDir + File.separator + "data").exists());
-    }
-
-    @Test
-    public void testLocalNodeUsingExtAndIndexDirectory() throws BackendException, InterruptedException {
-
-        String baseDir = Joiner.on(File.separator).join("target", "es", "jvmlocal_ext2");
-
-        assertFalse(new File(baseDir + File.separator + "data").exists());
-
-        CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.data", "true");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.client", "false");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.local", "true");
-        ModifiableConfiguration config =
-                new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
-                        cc, BasicConfiguration.Restriction.NONE);
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        config.set(INDEX_DIRECTORY, baseDir, INDEX_NAME);
-        Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
-        simpleWriteAndQuery(idx);
-        idx.close();
-
-        assertTrue(new File(baseDir + File.separator + "data").exists());
-    }
-
-    @Test
-    public void testLocalNodeUsingYaml() throws BackendException, InterruptedException {
-
-        String baseDir = Joiner.on(File.separator).join("target", "es", "jvmlocal_yml");
-
-        assertFalse(new File(baseDir + File.separator + "data").exists());
-
-        ModifiableConfiguration config = GraphDatabaseConfiguration.buildGraphConfiguration();
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        config.set(INDEX_CONF_FILE,
-                Joiner.on(File.separator).join("target", "test-classes", "es_jvmlocal.yml"), INDEX_NAME);
-        Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
-        simpleWriteAndQuery(idx);
-        idx.close();
-
-        assertTrue(new File(baseDir + File.separator + "data").exists());
-    }
-
-    @Test
-    public void testNetworkNodeUsingExt() throws BackendException, InterruptedException {
-        ElasticsearchRunner esr = new ElasticsearchRunner(".", "networkNodeUsingExt.yml");
-        esr.start();
-        CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.data", "false");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.node.client", "true");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.cluster.name", "networkNodeUsingExt");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.discovery.zen.ping.multicast.enabled", "false");
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.discovery.zen.ping.unicast.hosts", "localhost,127.0.0.1:9300");
-        ModifiableConfiguration config =
-                new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
-                cc, BasicConfiguration.Restriction.NONE);
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
-        simpleWriteAndQuery(idx);
-        idx.close();
-
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.discovery.zen.ping.unicast.hosts", "10.11.12.13");
-        config = new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
-                 cc, BasicConfiguration.Restriction.NONE);
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        config.set(HEALTH_REQUEST_TIMEOUT, "5s", INDEX_NAME);
-        indexConfig = config.restrictTo(INDEX_NAME);
-
-        Throwable failure = null;
-        try {
-            idx = new ElasticSearchIndex(indexConfig);
-        } catch (Throwable t) {
-            failure = t;
-        }
-        // idx.close();
-        Assert.assertNotNull("ES client failed to throw exception on connection failure", failure);
-        esr.stop();
-    }
-
-    @Test
-    public void testNetworkNodeUsingYaml() throws BackendException, InterruptedException {
-        ElasticsearchRunner esr = new ElasticsearchRunner(".", "networkNodeUsingYaml.yml");
-        esr.start();
-        ModifiableConfiguration config = GraphDatabaseConfiguration.buildGraphConfiguration();
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        config.set(INDEX_CONF_FILE,
-                Joiner.on(File.separator).join("target", "test-classes", "es_cfg_nodeclient.yml"), INDEX_NAME);
-        Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
-        simpleWriteAndQuery(idx);
-        idx.close();
-
-        config = GraphDatabaseConfiguration.buildGraphConfiguration();
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
-        config.set(HEALTH_REQUEST_TIMEOUT, "5s", INDEX_NAME);
-        config.set(INDEX_CONF_FILE,
-                Joiner.on(File.separator).join("target", "test-classes", "es_cfg_bogus_nodeclient.yml"), INDEX_NAME);
-        indexConfig = config.restrictTo(INDEX_NAME);
-
-        Throwable failure = null;
-        try {
-            idx = new ElasticSearchIndex(indexConfig);
-        } catch (Throwable t) {
-            failure = t;
-        }
-        //idx.close();
-        Assert.assertNotNull("ES client failed to throw exception on connection failure", failure);
-        esr.stop();
-    }
-
-    @Test
-    public void testIndexCreationOptions() throws InterruptedException, BackendException {
-        final int shards = 77;
-
-        ElasticsearchRunner esr = new ElasticsearchRunner(".", "indexCreationOptions.yml");
-        esr.start();
         CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
         cc.set("index." + INDEX_NAME + ".elasticsearch.create.ext.number_of_shards", String.valueOf(shards));
-        cc.set("index." + INDEX_NAME + ".elasticsearch.ext.cluster.name", "indexCreationOptions");
         ModifiableConfiguration config =
-                new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
-                        cc, BasicConfiguration.Restriction.NONE);
-        config.set(INTERFACE, ElasticSearchSetup.NODE.toString(), INDEX_NAME);
+            new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
+                cc, BasicConfiguration.Restriction.NONE);
+        config.set(INTERFACE, ElasticSearchSetup.REST_CLIENT.toString(), INDEX_NAME);
+        config.set(INDEX_HOSTS, new String[]{ "127.0.0.1:" + PORT }, INDEX_NAME);
+        config.set(GraphDatabaseConfiguration.INDEX_NAME, "janusgraph_creation_opts", INDEX_NAME);
         Configuration indexConfig = config.restrictTo(INDEX_NAME);
-        IndexProvider idx = new ElasticSearchIndex(indexConfig);
+        IndexProvider idx = open(indexConfig);
         simpleWriteAndQuery(idx);
 
+        ElasticSearchClient client = ElasticSearchSetup.REST_CLIENT.connect(indexConfig).getClient();
 
-
-        ImmutableSettings.Builder settingsBuilder = ImmutableSettings.settingsBuilder();
-        settingsBuilder.put("discovery.zen.ping.multicast.enabled", "false");
-        settingsBuilder.put("discovery.zen.ping.unicast.hosts", "localhost,127.0.0.1:9300");
-        settingsBuilder.put("cluster.name", "indexCreationOptions");
-        NodeBuilder nodeBuilder = NodeBuilder.nodeBuilder().settings(settingsBuilder.build());
-        nodeBuilder.client(true).data(false).local(false);
-        Node n = nodeBuilder.build().start();
-
-        GetSettingsResponse response = n.client().admin().indices().getSettings(new GetSettingsRequest().indices("janusgraph")).actionGet();
-        assertEquals(String.valueOf(shards), response.getSetting("janusgraph", "index.number_of_shards"));
+        assertEquals(String.valueOf(shards), client.getIndexSettings("janusgraph_creation_opts_jvmlocal_test_store").get("number_of_shards"));
 
         idx.close();
-        n.stop();
-        esr.stop();
+        client.close();
+    }
+
+    @Test
+    public void testExternalMappingsViaMapping() throws BackendException {
+        final Duration maxWrite = Duration.ofMillis(2000L);
+        final String storeName = "test_mapping";
+        final CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
+        final ModifiableConfiguration config = new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS, cc,
+                BasicConfiguration.Restriction.NONE);
+        config.set(USE_EXTERNAL_MAPPINGS, true, INDEX_NAME);
+        final Configuration indexConfig = config.restrictTo(INDEX_NAME);
+        InputStream fis = null;
+        try (CloseableHttpResponse res = httpClient.execute(host, new HttpDelete("janusgraph"))) {} catch (Exception e) {}
+        try {
+            //Test create index KO mapping is not push
+            try {
+                final IndexProvider idx = new  ElasticSearchIndex(indexConfig);
+                final KeyInformation.IndexRetriever indexRetriever = IndexProviderTest
+                        .getIndexRetriever(IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD));
+                final BaseTransactionConfig txConfig = StandardBaseTransactionConfig.of(TimestampProviders.MILLI);
+                final IndexTransaction itx = new IndexTransaction(idx, indexRetriever, txConfig, maxWrite);
+                idx.register(storeName, "date", IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD).get("date"), itx);
+                fail("should fail");
+            } catch (PermanentBackendException e) {
+            }
+            final HttpPut newMapping = new HttpPut("janusgraph_"+storeName);
+            fis = getClass().getResourceAsStream("/mapping.json");
+            newMapping.setEntity(new StringEntity(Joiner.on("").join(IOUtils.readLines(fis)), Charset.forName("UTF-8")));
+            executeRequest(newMapping);
+
+            final IndexProvider idx = new ElasticSearchIndex(indexConfig);
+            final KeyInformation.IndexRetriever indexRetriever = IndexProviderTest
+                    .getIndexRetriever(IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD));
+            final BaseTransactionConfig txConfig = StandardBaseTransactionConfig.of(TimestampProviders.MILLI);
+            final IndexTransaction itx = new IndexTransaction(idx, indexRetriever, txConfig, maxWrite);
+
+            // Test date property OK
+            idx.register(storeName, "date", IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD).get("date"), itx);
+            // Test weight property KO
+            try {
+                idx.register(storeName, "weight", IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD).get("weight"), itx);
+                fail("should fail");
+            } catch (BackendException e) {
+            }
+        } catch (IOException e) {
+            fail(e.getMessage());
+        } finally {
+            IOUtils.closeQuietly(fis);
+            try (CloseableHttpResponse res = httpClient.execute(host, new HttpDelete("janusgraph_"+storeName))) {} catch (Exception e) {}
+        }
+    }
+
+    @Test
+    public void testExternalMappingsViaTemplate() throws BackendException {
+        try (CloseableHttpResponse res = httpClient.execute(host, new HttpDelete("janusgraph*"))) {} catch (Exception e) {}
+        FileInputStream fis = null;
+        try {
+            HttpPut newTemplate = new HttpPut("_template/template_1");
+            fis = new FileInputStream(new File("src/test/resources/template.json"));
+            newTemplate.setEntity(new StringEntity(Joiner.on("").join(IOUtils.readLines(fis)), Charset.forName("UTF-8")));
+            executeRequest(newTemplate);
+            final String storeName = "test_mapping";
+            final HttpPut newMapping = new HttpPut("janusgraph_"+storeName);
+            executeRequest(newMapping);
+            final Duration maxWrite = Duration.ofMillis(2000L);
+            final CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
+            final ModifiableConfiguration config = new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS, cc,
+                    BasicConfiguration.Restriction.NONE);
+            config.set(USE_EXTERNAL_MAPPINGS, true, INDEX_NAME);
+            final Configuration indexConfig = config.restrictTo(INDEX_NAME);
+            final IndexProvider idx = new ElasticSearchIndex(indexConfig);
+            final KeyInformation.IndexRetriever indexRetriever = IndexProviderTest
+                    .getIndexRetriever(IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD));
+            final BaseTransactionConfig txConfig = StandardBaseTransactionConfig.of(TimestampProviders.MILLI);
+            final IndexTransaction itx = new IndexTransaction(idx, indexRetriever, txConfig, maxWrite);
+            // Test date property OK
+            idx.register(storeName, "date", IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD).get("date"), itx);
+            // Test weight property KO
+            try {
+                idx.register(storeName, "weight", IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_ENGLISH, ANALYZER_KEYWORD).get("weight"), itx);
+                fail("should fail");
+            } catch (BackendException e) {
+            }
+        } catch (IOException e) {
+            fail(e.getMessage());
+        } finally {
+            IOUtils.closeQuietly(fis);
+            try (CloseableHttpResponse res = httpClient.execute(host, new HttpDelete("_template/template_1"))) {} catch (Exception e) {}
+        }
+    }
+
+    @Test
+    public void testSplitIndexToMultiType() throws InterruptedException, BackendException, IOException {
+        CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
+        ModifiableConfiguration config =
+            new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
+                cc, BasicConfiguration.Restriction.NONE);
+        config.set(INTERFACE, ElasticSearchSetup.REST_CLIENT.toString(), INDEX_NAME);
+        config.set(INDEX_HOSTS, new String[]{ "127.0.0.1:" + PORT }, INDEX_NAME);
+        config.set(GraphDatabaseConfiguration.INDEX_NAME, "janusgraph_split", INDEX_NAME);
+        config.set(USE_DEPRECATED_MULTITYPE_INDEX, false, INDEX_NAME);
+        Configuration indexConfig = config.restrictTo(INDEX_NAME);
+        IndexProvider idx = open(indexConfig);
+        simpleWriteAndQuery(idx);
+        idx.close();
+
+        try {
+            config.set(USE_DEPRECATED_MULTITYPE_INDEX, true, INDEX_NAME);
+            indexConfig = config.restrictTo(INDEX_NAME);
+            open(indexConfig);
+            fail("should fail");
+        } catch (IllegalArgumentException e) {
+        }
+    }
+
+    @Test
+    public void testMultiTypeToSplitIndex() throws InterruptedException, BackendException, IOException {
+        CommonsConfiguration cc = new CommonsConfiguration(new BaseConfiguration());
+        ModifiableConfiguration config =
+            new ModifiableConfiguration(GraphDatabaseConfiguration.ROOT_NS,
+                cc, BasicConfiguration.Restriction.NONE);
+        config.set(INTERFACE, ElasticSearchSetup.REST_CLIENT.toString(), INDEX_NAME);
+        config.set(INDEX_HOSTS, new String[]{ "127.0.0.1:" + PORT }, INDEX_NAME);
+        config.set(GraphDatabaseConfiguration.INDEX_NAME, "janusgraph_multitype", INDEX_NAME);
+        config.set(USE_DEPRECATED_MULTITYPE_INDEX, true, INDEX_NAME);
+        Configuration indexConfig = config.restrictTo(INDEX_NAME);
+        IndexProvider idx = open(indexConfig);
+        simpleWriteAndQuery(idx);
+        idx.close();
+
+        try {
+            config.set(USE_DEPRECATED_MULTITYPE_INDEX, false, INDEX_NAME);
+            indexConfig = config.restrictTo(INDEX_NAME);
+            open(indexConfig);
+            fail("should fail");
+        } catch (IllegalArgumentException e) {
+        }
     }
 
     private void simpleWriteAndQuery(IndexProvider idx) throws BackendException, InterruptedException {
 
         final Duration maxWrite = Duration.ofMillis(2000L);
         final String storeName = "jvmlocal_test_store";
-        final KeyInformation.IndexRetriever indexRetriever = IndexProviderTest.getIndexRetriever(IndexProviderTest.getMapping(idx.getFeatures()));
+        final KeyInformation.IndexRetriever indexRetriever = IndexProviderTest.getIndexRetriever(IndexProviderTest.getMapping(idx.getFeatures(), ANALYZER_STANDARD, ANALYZER_KEYWORD));
 
         BaseTransactionConfig txConfig = StandardBaseTransactionConfig.of(TimestampProviders.MILLI);
         IndexTransaction itx = new IndexTransaction(idx, indexRetriever, txConfig, maxWrite);
+        for (Entry<String, KeyInformation> entry : IndexProviderTest.getMapping(idx.getFeatures(), "english", "keyword").entrySet()) {
+           idx.register(storeName, entry.getKey(), entry.getValue(), itx);
+        }
         assertEquals(0, itx.query(new IndexQuery(storeName, PredicateCondition.of(IndexProviderTest.NAME, Text.PREFIX, "ali"))).size());
         itx.add(storeName, "doc", IndexProviderTest.NAME, "alice", false);
         itx.commit();
@@ -306,4 +323,24 @@ public class ElasticSearchConfigTest {
         assertEquals(1, itx.query(new IndexQuery(storeName, PredicateCondition.of(IndexProviderTest.NAME, Text.PREFIX, "ali"))).size());
         itx.rollback();
     }
+
+    private void executeRequest(HttpRequestBase request) throws IOException {
+        CloseableHttpResponse res = null;
+        try {
+            res = httpClient.execute(host, request);
+            assertTrue(res.getStatusLine().getStatusCode() >= 200);
+            assertTrue(res.getStatusLine().getStatusCode() < 300);
+            assertFalse(EntityUtils.toString(res.getEntity()).contains("error"));
+        } finally {
+            IOUtils.closeQuietly(res);
+        }
+    }
+
+    private IndexProvider open(Configuration indexConfig) throws BackendException {
+        final ElasticSearchIndex idx = new ElasticSearchIndex(indexConfig);
+        idx.clearStorage();
+        idx.close();
+        return new ElasticSearchIndex(indexConfig);
+    }
+
 }

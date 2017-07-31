@@ -24,21 +24,16 @@ import org.janusgraph.core.JanusGraphFactory;
 
 public class ElasticSearchConstants {
 
-    public static final String ES_PROPERTIES_FILE = "janusgraph-es.properties";
-    public static final String ES_VERSION_EXPECTED;
-    
     private static final Logger log = LoggerFactory.getLogger(ElasticSearchConstants.class);
-    
-    static {
-        Properties props;
 
-        try {
-            props = new Properties();
-            props.load(JanusGraphFactory.class.getClassLoader().getResourceAsStream(ES_PROPERTIES_FILE));
-        } catch (IOException e) {
-            throw new AssertionError(e);
-        }
-
-        ES_VERSION_EXPECTED = props.getProperty("es.version");
-    }
+    public static final String ES_PROPERTIES_FILE = "janusgraph-es.properties";
+    public static final String ES_DOC_KEY = "doc";
+    public static final String ES_UPSERT_KEY = "upsert";
+    public static final String ES_SCRIPT_KEY = "script";
+    public static final String ES_INLINE_KEY = "inline";
+    public static final String ES_LANG_KEY = "lang";
+    public static final String ES_TYPE_KEY = "type";
+    public static final String ES_INDEX_KEY = "index";
+    public static final String ES_ANALYZER = "analyzer";
+    public static final String ES_GEO_COORDS_KEY = "coordinates";
 }

@@ -71,12 +71,14 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 import static org.janusgraph.graphdb.JanusGraphTest.evaluateQuery;
 import static org.janusgraph.graphdb.configuration.GraphDatabaseConfiguration.*;
@@ -96,6 +98,8 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
     public static final String EINDEX = "e" + INDEX;
     public static final String PINDEX = "p" + INDEX;
 
+    private static final int RETRY_COUNT = 30;
+    private static final long RETRY_INTERVAL = 1000l;
 
     public final boolean supportsGeoPoint;
     public final boolean supportsNumeric;
@@ -203,7 +207,7 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
 
 
     @Test
-    public void testIndexing() {
+    public void testIndexing() throws InterruptedException {
 
         PropertyKey text = makeKey("text", String.class);
         createExternalVertexIndex(text, INDEX);
@@ -212,6 +216,10 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
         PropertyKey location = makeKey("location", Geoshape.class);
         createExternalVertexIndex(location, INDEX);
         createExternalEdgeIndex(location, INDEX);
+
+        PropertyKey boundary = makeKey("boundary", Geoshape.class);
+        mgmt.addIndexKey(getExternalIndex(Vertex.class,INDEX),boundary, Parameter.of("mapping", Mapping.PREFIX_TREE), Parameter.of("index-geo-dist-error-pct", 0.0025));
+        mgmt.addIndexKey(getExternalIndex(Edge.class,INDEX),boundary, Parameter.of("mapping", Mapping.PREFIX_TREE), Parameter.of("index-geo-dist-error-pct", 0.0025));
 
         PropertyKey time = makeKey("time", Long.class);
         createExternalVertexIndex(time, INDEX);
@@ -226,7 +234,7 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
         createExternalEdgeIndex(group, INDEX);
 
         makeVertexIndexedKey("uid", Integer.class);
-        ((StandardEdgeLabelMaker) mgmt.makeEdgeLabel("knows")).sortKey(time).signature(location).make();
+        ((StandardEdgeLabelMaker) mgmt.makeEdgeLabel("knows")).sortKey(time).signature(location,boundary).make();
         finishSchema();
 
         clopen();
@@ -245,112 +253,43 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
             v.property(VertexProperty.Cardinality.single, "time", i);
             offset = (i % 2 == 0 ? 1 : -1) * (i * 50.0 / numV);
             v.property(VertexProperty.Cardinality.single, "location", Geoshape.point(0.0 + offset, 0.0 + offset));
-
+            if (i % 2 == 0) {
+                v.property(VertexProperty.Cardinality.single, "boundary", Geoshape.line(Arrays.asList(new double[][] {
+                        {offset-0.1, offset-0.1}, {offset+0.1, offset-0.1}, {offset+0.1, offset+0.1}, {offset-0.1, offset+0.1}})));
+            } else {
+                v.property(VertexProperty.Cardinality.single, "boundary", Geoshape.polygon(Arrays.asList(new double[][]
+                        {{offset-0.1,offset-0.1},{offset+0.1,offset-0.1},{offset+0.1,offset+0.1},{offset-0.1,offset+0.1},{offset-0.1,offset-0.1}})));
+            }
             Edge e = v.addEdge("knows", getVertex("uid", Math.max(0, i - 1)));
             e.property("text", "Vertex " + words[i % words.length]);
             e.property("time", i);
             e.property("category", i % numCategories);
             e.property("group", i % numGroups);
             e.property("location", Geoshape.point(0.0 + offset, 0.0 + offset));
-        }
-
-        for (int i = 0; i < words.length; i++) {
-            int expectedSize = numV / words.length;
-            assertCount(expectedSize, tx.query().has("text", Text.CONTAINS, words[i]).vertices());
-            assertCount(expectedSize, tx.query().has("text", Text.CONTAINS, words[i]).edges());
-
-            //Test ordering
-            for (String orderKey : new String[]{"time", "category"}) {
-                for (Order order : Order.values()) {
-                    for (JanusGraphQuery traversal : ImmutableList.of(
-                            tx.query().has("text", Text.CONTAINS, words[i]).orderBy(orderKey, order.getTP()),
-                            tx.query().has("text", Text.CONTAINS, words[i]).orderBy(orderKey, order.getTP())
-                    )) {
-                        verifyElementOrder(traversal.vertices(), orderKey, order, expectedSize);
-                    }
-                }
+            if (i % 2 == 0) {
+                e.property("boundary", Geoshape.line(Arrays.asList(new double[][] {
+                        {offset-0.1, offset-0.1}, {offset+0.1, offset-0.1}, {offset+0.1, offset+0.1}, {offset-0.1, offset+0.1}})));
+            } else {
+                e.property("boundary", Geoshape.polygon(Arrays.asList(new double[][]
+                        {{offset-0.1,offset-0.1},{offset+0.1,offset-0.1},{offset+0.1,offset+0.1},{offset-0.1,offset+0.1},{offset-0.1,offset-0.1}})));
             }
         }
 
-        assertCount(3, tx.query().has("group", 3).orderBy("time", incr).limit(3).vertices());
-        assertCount(3, tx.query().has("group", 3).orderBy("time", decr).limit(3).edges());
-
-        for (int i = 0; i < numV / 2; i += numV / 10) {
-            assertCount(i, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, i).has("time", Cmp.LESS_THAN, i + i).vertices());
-            assertCount(i, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, i).has("time", Cmp.LESS_THAN, i + i).edges());
-        }
-
-        for (int i = 0; i < numV; i += 10) {
-            offset = (i * 50.0 / originalNumV);
-            distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
-            assertCount(i + 1, tx.query().has("location", Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).vertices());
-            assertCount(i + 1, tx.query().has("location", Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).edges());
-        }
-
-        //Queries combining mixed and composite indexes
-        assertCount(4, tx.query().has("category", 1).interval("time", 10, 28).vertices());
-        assertCount(4, tx.query().has("category", 1).interval("time", 10, 28).edges());
-
-        assertCount(5, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, 10).has("time", Cmp.LESS_THAN, 30).has("text", Text.CONTAINS, words[0]).vertices());
-        offset = (19 * 50.0 / originalNumV);
-        distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
-        assertCount(5, tx.query().has("location", Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).has("text", Text.CONTAINS, words[0]).vertices());
-
-        assertCount(numV, tx.query().vertices());
-        assertCount(numV, tx.query().edges());
+        checkIndexingCounts(words, numV, originalNumV, true);
 
         //--------------
 
-        clopen();
-
-        //##########################
-        //Copied from above
-        //##########################
-
-        for (int i = 0; i < words.length; i++) {
-            int expectedSize = numV / words.length;
-            assertCount(expectedSize, tx.query().has("text", Text.CONTAINS, words[i]).vertices());
-            assertCount(expectedSize, tx.query().has("text", Text.CONTAINS, words[i]).edges());
-
-            //Test ordering
-            for (String orderKey : new String[]{"time", "category"}) {
-                for (Order order : Order.values()) {
-                    for (JanusGraphQuery traversal : ImmutableList.of(
-                            tx.query().has("text", Text.CONTAINS, words[i]).orderBy(orderKey, order.getTP()),
-                            tx.query().has("text", Text.CONTAINS, words[i]).orderBy(orderKey, order.getTP())
-                    )) {
-                        verifyElementOrder(traversal.vertices(), orderKey, order, expectedSize);
-                    }
-                }
+        // some indexing backends may guarantee only eventual consistency
+        for (int retry = 0, status = 1; retry < RETRY_COUNT && status > 0; retry++) {
+            clopen();
+            try {
+                checkIndexingCounts(words, numV, originalNumV, true);
+                status = 0;
+            } catch (AssertionError e) {
+                if (retry >= RETRY_COUNT-1) throw e;
+                Thread.sleep(RETRY_INTERVAL);
             }
         }
-
-        assertCount(3, tx.query().has("group", 3).orderBy("time", incr).limit(3).vertices());
-        assertCount(3, tx.query().has("group", 3).orderBy("time", decr).limit(3).edges());
-
-        for (int i = 0; i < numV / 2; i += numV / 10) {
-            assertCount(i, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, i).has("time", Cmp.LESS_THAN, i + i).vertices());
-            assertCount(i, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, i).has("time", Cmp.LESS_THAN, i + i).edges());
-        }
-
-        for (int i = 0; i < numV; i += 10) {
-            offset = (i * 50.0 / originalNumV);
-            distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
-            assertCount(i + 1, tx.query().has("location", Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).vertices());
-            assertCount(i + 1, tx.query().has("location", Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).edges());
-        }
-
-        //Queries combining mixed and composite indexes
-        assertCount(4, tx.query().has("category", 1).interval("time", 10, 28).vertices());
-        assertCount(4, tx.query().has("category", 1).interval("time", 10, 28).edges());
-
-        assertCount(5, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, 10).has("time", Cmp.LESS_THAN, 30).has("text", Text.CONTAINS, words[0]).vertices());
-        offset = (19 * 50.0 / originalNumV);
-        distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
-        assertCount(5, tx.query().has("location", Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).has("text", Text.CONTAINS, words[0]).vertices());
-
-        assertCount(numV, tx.query().vertices());
-        assertCount(numV, tx.query().edges());
 
         newTx();
 
@@ -359,37 +298,57 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
             getVertex("uid", i).remove();
         }
 
-        numV = numV - numDelete;
+        numV -= numDelete;
 
-        //Copied from above
+        checkIndexingCounts(words, numV, originalNumV, false);
+    }
+
+    private void checkIndexingCounts(String[] words, int numV, int originalNumV, boolean checkOrder) {
         for (int i = 0; i < words.length; i++) {
-            assertCount(numV / words.length, tx.query().has("text", Text.CONTAINS, words[i]).vertices());
-            assertCount(numV / words.length, tx.query().has("text", Text.CONTAINS, words[i]).edges());
+            int expectedSize = numV / words.length;
+            assertCount(expectedSize, tx.query().has("text", Text.CONTAINS, words[i]).vertices());
+            assertCount(expectedSize, tx.query().has("text", Text.CONTAINS, words[i]).edges());
+
+            //Test ordering
+            if (checkOrder) {
+                for (String orderKey : new String[]{"time", "category"}) {
+                    for (Order order : Order.values()) {
+                        for (JanusGraphQuery traversal : ImmutableList.of(
+                            tx.query().has("text", Text.CONTAINS, words[i]).orderBy(orderKey, order.getTP()),
+                            tx.query().has("text", Text.CONTAINS, words[i]).orderBy(orderKey, order.getTP())
+                        )) {
+                            verifyElementOrder(traversal.vertices(), orderKey, order, expectedSize);
+                        }
+                    }
+                }
+            }
         }
+
+        assertCount(3, tx.query().has("group", 3).orderBy("time", incr).limit(3).vertices());
+        assertCount(3, tx.query().has("group", 3).orderBy("time", decr).limit(3).edges());
 
         for (int i = 0; i < numV / 2; i += numV / 10) {
             assertCount(i, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, i).has("time", Cmp.LESS_THAN, i + i).vertices());
             assertCount(i, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, i).has("time", Cmp.LESS_THAN, i + i).edges());
         }
 
-        for (int i = 0; i < numV; i += 10) {
-            offset = (i * 50.0 / originalNumV);
-            distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
-            assertCount(i + 1, tx.query().has("location", Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).vertices());
-            assertCount(i + 1, tx.query().has("location", Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).edges());
+        for (int i = 0; i < numV; i += 5) {
+            testGeo(i, originalNumV, numV, "location", "boundary");
         }
 
+        //Queries combining mixed and composite indexes
+        assertCount(4, tx.query().has("category", 1).interval("time", 10, 28).vertices());
+        assertCount(4, tx.query().has("category", 1).interval("time", 10, 28).edges());
+
         assertCount(5, tx.query().has("time", Cmp.GREATER_THAN_EQUAL, 10).has("time", Cmp.LESS_THAN, 30).has("text", Text.CONTAINS, words[0]).vertices());
-        offset = (19 * 50.0 / originalNumV);
-        distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
+        double offset = (19 * 50.0 / originalNumV);
+        double distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + 20;
         assertCount(5, tx.query().has("location", Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).has("text", Text.CONTAINS, words[0]).vertices());
+        assertCount(5, tx.query().has("boundary", Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).has("text", Text.CONTAINS, words[0]).vertices());
 
         assertCount(numV, tx.query().vertices());
         assertCount(numV, tx.query().edges());
-
-
     }
-
 
     /**
      * Tests indexing boolean
@@ -978,9 +937,13 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
         assertCount(numV / strs.length, graph.indexQuery(VINDEX, "v.text:(farm uncle berry) AND v.name:\"Uncle Berry has a farm\"").vertices());
         assertCount(numV / strs.length * 2, graph.indexQuery(VINDEX, "v.text:(beautiful are ducks)").vertices());
         assertCount(numV / strs.length * 2 - 10, graph.indexQuery(VINDEX, "v.text:(beautiful are ducks)").offset(10).vertices());
+        long total = size(graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(Integer.MAX_VALUE).vertices());
         assertCount(10, graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(10).vertices());
+        assertEquals(total, (long) graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(10).vertexTotals());
         assertCount(10, graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(10).offset(10).vertices());
+        assertEquals(total, (long) graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(10).offset(10).vertexTotals());
         assertCount(0, graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(10).offset(numV).vertices());
+        assertEquals(total, (long) graph.indexQuery(VINDEX, "v.\"text\":(beautiful are ducks)").limit(10).offset(numV).vertexTotals());
         //Test name mapping
         assertCount(numV / strs.length * 2, graph.indexQuery(VINDEX, "xtext:ducks").vertices());
         assertCount(0, graph.indexQuery(VINDEX, "text:ducks").vertices());
@@ -990,25 +953,37 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
 
         //Same queries for edges
         assertCount(numV / strs.length * 2, graph.indexQuery(EINDEX, "e.text:ducks").edges());
+        total = size(graph.indexQuery(EINDEX, "e.text:ducks").limit(Integer.MAX_VALUE).edges());
+        assertEquals(total, (long) numV / strs.length * 2, graph.indexQuery(EINDEX, "e.text:ducks").edgeTotals());
         assertCount(numV / strs.length * 2, graph.indexQuery(EINDEX, "e.text:(farm uncle berry)").edges());
         assertCount(numV / strs.length, graph.indexQuery(EINDEX, "e.text:(farm uncle berry) AND e.name:\"Uncle Berry has a farm\"").edges());
         assertCount(numV / strs.length * 2, graph.indexQuery(EINDEX, "e.text:(beautiful are ducks)").edges());
         assertCount(numV / strs.length * 2 - 10, graph.indexQuery(EINDEX, "e.text:(beautiful are ducks)").offset(10).edges());
+        total = size(graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(Integer.MAX_VALUE).edges());
         assertCount(10, graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(10).edges());
+        assertEquals(total, (long) graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(10).edgeTotals());
         assertCount(10, graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(10).offset(10).edges());
+        assertEquals(total, (long) graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(10).offset(10).edgeTotals());
         assertCount(0, graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(10).offset(numV).edges());
+        assertEquals(total, (long) graph.indexQuery(EINDEX, "e.\"text\":(beautiful are ducks)").limit(10).offset(numV).edgeTotals());
         //Test name mapping
         assertCount(numV / strs.length * 2, graph.indexQuery(EINDEX, "text:ducks").edges());
 
-        //Same queries for edges
+        //Same queries for properties
         assertCount(numV / strs.length * 2, graph.indexQuery(PINDEX, "p.text:ducks").properties());
+        total = size(graph.indexQuery(PINDEX, "p.text:ducks").limit(Integer.MAX_VALUE).properties());
+        assertEquals(total, (long) numV / strs.length * 2, graph.indexQuery(PINDEX, "p.text:ducks").propertyTotals());
         assertCount(numV / strs.length * 2, graph.indexQuery(PINDEX, "p.text:(farm uncle berry)").properties());
         assertCount(numV / strs.length, graph.indexQuery(PINDEX, "p.text:(farm uncle berry) AND p.name:\"Uncle Berry has a farm\"").properties());
         assertCount(numV / strs.length * 2, graph.indexQuery(PINDEX, "p.text:(beautiful are ducks)").properties());
         assertCount(numV / strs.length * 2 - 10, graph.indexQuery(PINDEX, "p.text:(beautiful are ducks)").offset(10).properties());
+        total = size(graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(Integer.MAX_VALUE).properties());
         assertCount(10, graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(10).properties());
+        assertEquals(total, (long) graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(10).propertyTotals());
         assertCount(10, graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(10).offset(10).properties());
+        assertEquals(total, (long) graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(10).offset(10).propertyTotals());
         assertCount(0, graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(10).offset(numV).properties());
+        assertEquals(total, (long) graph.indexQuery(PINDEX, "p.\"text\":(beautiful are ducks)").limit(10).offset(numV).propertyTotals());
         //Test name mapping
         assertCount(numV / strs.length * 2, graph.indexQuery(PINDEX, "text:ducks").properties());
     }
@@ -1042,7 +1017,10 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
                 2, new boolean[]{true, true}, "mixed");
         evaluateQuery(tx.query().has("name", Text.PREFIX, "Middle"), ElementCategory.VERTEX,
                 1, new boolean[]{true, true}, "mixed");
-
+        evaluateQuery(tx.query().has("name", Text.FUZZY, "Long john Don"), ElementCategory.VERTEX,
+                1, new boolean[]{true, true}, "mixed");
+        evaluateQuery(tx.query().has("name", Text.CONTAINS_FUZZY, "Midle"), ElementCategory.VERTEX,
+                1, new boolean[]{true, true}, "mixed");
         for (Vertex u : tx.getVertices()) {
             String n = u.<String>value("name");
             if (n.endsWith("Don")) {
@@ -1681,15 +1659,15 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
             PropertyKey intProperty = mgmt.makePropertyKey("age").dataType(Integer.class).cardinality(cardinality).make();
             PropertyKey longProperty = mgmt.makePropertyKey("long").dataType(Long.class).cardinality(cardinality).make();
             PropertyKey uuidProperty = mgmt.makePropertyKey("uuid").dataType(UUID.class).cardinality(cardinality).make();
-            PropertyKey geoProperty = mgmt.makePropertyKey("geo").dataType(Geoshape.class).cardinality(cardinality).make();
-            mgmt.buildIndex("collectionIndex", Vertex.class).addKey(stringProperty, getStringMapping()).addKey(intProperty).addKey(longProperty).addKey(uuidProperty).addKey(geoProperty).buildMixedIndex(INDEX);
+            PropertyKey geopointProperty = mgmt.makePropertyKey("geopoint").dataType(Geoshape.class).cardinality(cardinality).make();
+            mgmt.buildIndex("collectionIndex", Vertex.class).addKey(stringProperty, getStringMapping()).addKey(intProperty).addKey(longProperty).addKey(uuidProperty).addKey(geopointProperty).buildMixedIndex(INDEX);
 
             finishSchema();
             testCollection(cardinality, "name", "Totoro", "Hiro");
             testCollection(cardinality, "age", 1, 2);
             testCollection(cardinality, "long", 1L, 2L);
             testCollection(cardinality, "uuid", UUID.randomUUID(), UUID.randomUUID());
-            testCollection(cardinality, "geo", Geoshape.point(1.0, 1.0), Geoshape.point(2.0, 2.0));
+            testCollection(cardinality, "geopoint", Geoshape.point(1.0, 1.0), Geoshape.point(2.0, 2.0));
         } else {
             try {
                 PropertyKey stringProperty = mgmt.makePropertyKey("name").dataType(String.class).cardinality(cardinality).make();
@@ -1775,4 +1753,84 @@ public abstract class JanusGraphIndexTest extends JanusGraphBaseTest {
 
     }
 
+    private void testGeo(int i, int origNumV, int numV, String geoPointProperty, String geoShapeProperty) {
+        double offset = (i * 50.0 / origNumV);
+        double bufferKm = 20;
+        double distance = Geoshape.point(0.0, 0.0).getPoint().distance(Geoshape.point(offset, offset).getPoint()) + bufferKm;
+
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).vertices());
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance)).edges());
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).vertices());
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).edges());
+        assertCount(numV-(i + 1), tx.query().has(geoPointProperty, Geo.DISJOINT, Geoshape.circle(0.0, 0.0, distance)).vertices());
+        assertCount(numV-(i + 1), tx.query().has(geoPointProperty, Geo.DISJOINT, Geoshape.circle(0.0, 0.0, distance)).edges());
+        assertCount(i + 1, tx.query().has(geoShapeProperty, Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).vertices());
+        assertCount(i + 1, tx.query().has(geoShapeProperty, Geo.INTERSECT, Geoshape.circle(0.0, 0.0, distance)).edges());
+        if (i > 0) {
+            assertCount(i, tx.query().has(geoShapeProperty, Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance-bufferKm)).vertices());
+            assertCount(i, tx.query().has(geoShapeProperty, Geo.WITHIN, Geoshape.circle(0.0, 0.0, distance-bufferKm)).edges());
+        }
+        assertCount(numV-(i + 1), tx.query().has(geoShapeProperty, Geo.DISJOINT, Geoshape.circle(0.0, 0.0, distance)).vertices());
+        assertCount(numV-(i + 1), tx.query().has(geoShapeProperty, Geo.DISJOINT, Geoshape.circle(0.0, 0.0, distance)).edges());
+
+        if (indexFeatures.supportsGeoContains()) {
+            assertCount(i % 2, tx.query().has(geoShapeProperty, Geo.CONTAINS, Geoshape.point(-offset, -offset)).vertices());
+            assertCount(i % 2, tx.query().has(geoShapeProperty, Geo.CONTAINS, Geoshape.point(-offset, -offset)).edges());
+        }
+
+        double buffer = bufferKm/111.;
+        double min = -Math.abs(offset);
+        double max = Math.abs(offset);
+        Geoshape bufferedBox = Geoshape.box(min-buffer, min-buffer, max+buffer, max+buffer);
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.WITHIN, bufferedBox).vertices());
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.WITHIN, bufferedBox).edges());
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.INTERSECT, bufferedBox).vertices());
+        assertCount(i + 1, tx.query().has(geoPointProperty, Geo.INTERSECT, bufferedBox).edges());
+        assertCount(numV-(i + 1), tx.query().has(geoPointProperty, Geo.DISJOINT, bufferedBox).vertices());
+        assertCount(numV-(i + 1), tx.query().has(geoPointProperty, Geo.DISJOINT, bufferedBox).edges());
+        if (i > 0) {
+            Geoshape exactBox = Geoshape.box(min, min, max, max);
+            assertCount(i, tx.query().has(geoShapeProperty, Geo.WITHIN, exactBox).vertices());
+            assertCount(i, tx.query().has(geoShapeProperty, Geo.WITHIN, exactBox).edges());
+        }
+        assertCount(i + 1, tx.query().has(geoShapeProperty, Geo.INTERSECT, bufferedBox).vertices());
+        assertCount(i + 1, tx.query().has(geoShapeProperty, Geo.INTERSECT, bufferedBox).edges());
+        assertCount(numV-(i + 1), tx.query().has(geoShapeProperty, Geo.DISJOINT, bufferedBox).vertices());
+        assertCount(numV-(i + 1), tx.query().has(geoShapeProperty, Geo.DISJOINT, bufferedBox).edges());
+
+        Geoshape bufferedPoly = Geoshape.polygon(Arrays.asList(new double[][]
+                {{min-buffer,min-buffer},{max+buffer,min-buffer},{max+buffer,max+buffer},{min-buffer,max+buffer},{min-buffer,min-buffer}}));
+        if (i > 0) {
+            Geoshape exactPoly = Geoshape.polygon(Arrays.asList(new double[][]
+                    {{min,min},{max,min},{max,max},{min,max},{min,min}}));
+            assertCount(i, tx.query().has(geoShapeProperty, Geo.WITHIN, exactPoly).vertices());
+            assertCount(i, tx.query().has(geoShapeProperty, Geo.WITHIN, exactPoly).edges());
+        }
+        assertCount(i + 1, tx.query().has(geoShapeProperty, Geo.INTERSECT, bufferedPoly).vertices());
+        assertCount(i + 1, tx.query().has(geoShapeProperty, Geo.INTERSECT, bufferedPoly).edges());
+        assertCount(numV-(i + 1), tx.query().has(geoShapeProperty, Geo.DISJOINT, bufferedPoly).vertices());
+        assertCount(numV-(i + 1), tx.query().has(geoShapeProperty, Geo.DISJOINT, bufferedPoly).edges());
+    }
+
+    @Test
+    public void shouldAwaitMultipleStatuses() throws InterruptedException, ExecutionException {
+        PropertyKey key1 = makeKey("key1", String.class);
+        JanusGraphIndex index = mgmt.buildIndex("randomMixedIndex", Vertex.class).addKey(key1).buildMixedIndex(INDEX);
+        if (index.getIndexStatus(key1) == SchemaStatus.INSTALLED) {
+            mgmt.updateIndex(mgmt.getGraphIndex("randomMixedIndex"), SchemaAction.REGISTER_INDEX).get();
+            mgmt.updateIndex(mgmt.getGraphIndex("randomMixedIndex"), SchemaAction.ENABLE_INDEX).get();
+        } else if (index.getIndexStatus(key1) == SchemaStatus.REGISTERED) {
+            mgmt.updateIndex(mgmt.getGraphIndex("randomMixedIndex"), SchemaAction.ENABLE_INDEX).get();
+        }
+        PropertyKey key2 = makeKey("key2", String.class);
+        mgmt.addIndexKey(index, key2);
+        mgmt.commit();
+        //key1 now has status ENABLED, let's ensure we can watch for REGISTERED and ENABLED
+        try {
+            ManagementSystem.awaitGraphIndexStatus(graph, "randomMixedIndex").status(SchemaStatus.REGISTERED, SchemaStatus.ENABLED).call();
+        } catch (Exception e) {
+            Assert.fail("Failed to awaitGraphIndexStatus on multiple statuses.");
+        }
+    }
 }
+
