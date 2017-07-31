@@ -66,7 +66,7 @@ provides links to documentation, getting-started guides and release downloads.
 
 ## Contributing
 
-Please see [`GETTING_INVOLVED.md`](GETTING_INVOLVED.md) for more information, including
+Please see [`CONTRIBUTING.md`](CONTRIBUTING.md) for more information, including
 CLAs and best practices for working with GitHub.
 
 ## Users
